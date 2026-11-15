@@ -1,38 +1,67 @@
 ﻿using StackExchange.Redis;
 
-const int MaxAttempts = 5;      // after this many failures, give up
-const int FailPercent = 70;     // pretend 70% of attempts fail (so we can watch retries)
+const int MaxAttempts = 5;
+const int FailPercent = 0;               // no normal failures in this experiment
+const int CrashAfterWorkPercent = 40;    // pretend the worker dies right after sending
+const bool UseIdempotencyKey = false;    // experiment 1: false, experiment 2: true
 
 var redis = ConnectionMultiplexer.Connect("localhost:6379");
 var db = redis.GetDatabase();
 
-Console.WriteLine("Worker started. Waiting for jobs...");
+Console.WriteLine($"Worker started. Idempotency key on: {UseIdempotencyKey}");
 
 while (true)
 {
     // Take the oldest job from "jobs" and put it into "processing", in one step
     RedisValue job = db.ListMove("jobs", "processing", ListSide.Right, ListSide.Left);
 
-    // Nothing waiting? Rest a moment and check again
     if (job.IsNull)
     {
         Thread.Sleep(500);
         continue;
     }
 
-    // Write the pick-up time on the slip
     db.HashSet("started", job, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
     try
     {
         Console.WriteLine($"Processing: {job}");
-        Thread.Sleep(2000);                      // pretend the work takes 2 seconds
+        Thread.Sleep(2000);
 
-        // Pretend the work sometimes fails
         if (Random.Shared.Next(100) < FailPercent)
             throw new Exception("Simulated failure");
 
-        // SUCCESS: clean up everything about this job
+        // The real-world side effect (pretend: send an email)
+        bool shouldSend = true;
+
+        if (UseIdempotencyKey)
+        {
+            // Succeeds only the FIRST time this job name is seen (NX = not exists).
+            // The key expires after 24 hours so Redis doesn't fill up forever.
+            shouldSend = db.StringSet(
+                $"email-sent:{job}", "1",
+                expiry: TimeSpan.FromHours(24),
+                when: When.NotExists);
+        }
+
+        if (shouldSend)
+        {
+            db.HashIncrement("sent", job);       // counts how many emails really went out
+            Console.WriteLine($"EMAIL SENT for {job}");
+        }
+        else
+        {
+            Console.WriteLine($"Duplicate ignored: {job} was already handled");
+        }
+
+        // Pretend the worker dies right here: work done, but no ack
+        if (Random.Shared.Next(100) < CrashAfterWorkPercent)
+        {
+            Console.WriteLine($"!! Simulated crash on {job} (no ack)");
+            continue;
+        }
+
+        // SUCCESS: ack and clean up
         db.ListRemove("processing", job, 1);
         db.HashDelete("started", job);
         db.HashDelete("attempts", job);
@@ -40,17 +69,14 @@ while (true)
     }
     catch (Exception ex)
     {
-        // FAILURE: count this failure (1, 2, 3, ...)
         long attempts = db.HashIncrement("attempts", job);
 
-        // Everything below happens together, as one transaction
         var tran = db.CreateTransaction();
         _ = tran.ListRemoveAsync("processing", job, 1);
         _ = tran.HashDeleteAsync("started", job);
 
         if (attempts >= MaxAttempts)
         {
-            // Too many failures: park it in the dead-letter list
             _ = tran.ListLeftPushAsync("dead", job);
             _ = tran.HashDeleteAsync("attempts", job);
             await tran.ExecuteAsync();
@@ -58,7 +84,6 @@ while (true)
         }
         else
         {
-            // Wait 1s, 2s, 4s, 8s... then retry
             long delay = (long)Math.Pow(2, attempts - 1);
             long retryAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + delay;
             _ = tran.SortedSetAddAsync("delayed", job, retryAt);

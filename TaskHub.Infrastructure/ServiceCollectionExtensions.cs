@@ -21,6 +21,9 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services, string connectionString)
     {
         services.AddDbContext<TaskHubDbContext>(options => options.UseNpgsql(connectionString));
+
+        // Scoped = a fresh copy for each unit of work (see the explanation below)
+        services.AddScoped<IRunStore, EfRunStore>();
         return services;
     }
 }

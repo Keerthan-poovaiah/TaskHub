@@ -67,9 +67,18 @@ namespace TaskHub.Infrastructure.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("CronExpression")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTime?>("NextRunAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Target")
                         .IsRequired()
@@ -80,6 +89,8 @@ namespace TaskHub.Infrastructure.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("IsActive", "NextRunAtUtc");
 
                     b.ToTable("Tasks");
                 });

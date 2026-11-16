@@ -4,5 +4,6 @@
   <Project Path="TaskHub.Core/TaskHub.Core.csproj" />
   <Project Path="TaskHub.Infrastructure/TaskHub.Infrastructure.csproj" />
   <Project Path="TaskHub.Reaper/TaskHub.Reaper.csproj" />
+  <Project Path="TaskHub.Scheduler/TaskHub.Scheduler.csproj" />
   <Project Path="TaskHub.Worker/TaskHub.Worker.csproj" />
 </Solution>

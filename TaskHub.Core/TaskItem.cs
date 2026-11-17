@@ -10,6 +10,11 @@ public enum TaskType
 public class TaskItem
 {
     public int Id { get; set; }
+
+    // Who owns this task
+    public int UserId { get; set; }
+    public User? User { get; set; }
+
     public string Name { get; set; } = "";
     public TaskType Type { get; set; }
     public string Target { get; set; } = "";   // an email address or a URL

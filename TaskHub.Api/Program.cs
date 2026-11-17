@@ -1,7 +1,17 @@
+using System.Net.Mail;
+using System.Security.Claims;
+using System.Text;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
 using TaskHub.Core;
 using TaskHub.Infrastructure;
+
+const string TokenIssuer = "taskhub-api";
+const string TokenAudience = "taskhub-clients";
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,15 +24,154 @@ builder.Services.AddTaskHubDatabase(
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
+// The stamping tool. It comes from an environment variable, never from the code.
+string jwtSecret = builder.Configuration["JWT_SECRET"] ?? "";
+if (jwtSecret.Length < 32)
+    throw new InvalidOperationException(
+        "JWT_SECRET is missing or too short. Set it to a random string of at least 32 characters.");
+
+var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
+
+// The password scrambler (salted and deliberately slow, so guessing is expensive)
+builder.Services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
+
+// "Check the stamp on every request that carries a ticket"
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.MapInboundClaims = false;   // keep the claim names exactly as we wrote them ("sub")
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = TokenIssuer,
+            ValidateAudience = true,
+            ValidAudience = TokenAudience,
+            ValidateLifetime = true,                 // reject expired tickets
+            ValidateIssuerSigningKey = true,         // reject forged stamps
+            IssuerSigningKey = signingKey,
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+    });
+builder.Services.AddAuthorization();
+
 var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+// ---------- Helpers ----------
+
+// Makes a stamped ticket that says "this is user #N"
+string CreateToken(User user)
+{
+    var descriptor = new SecurityTokenDescriptor
+    {
+        Subject = new ClaimsIdentity(new[]
+        {
+            new Claim("sub", user.Id.ToString()),
+            new Claim("email", user.Email)
+        }),
+        Issuer = TokenIssuer,
+        Audience = TokenAudience,
+        Expires = DateTime.UtcNow.AddMinutes(60),
+        SigningCredentials = new SigningCredentials(signingKey, SecurityAlgorithms.HmacSha256)
+    };
+
+    return new JsonWebTokenHandler().CreateToken(descriptor);
+}
+
+// Reads "who is asking?" out of a ticket that has already passed the stamp check
+static int? GetUserId(ClaimsPrincipal principal)
+{
+    string? value = principal.FindFirst("sub")?.Value;
+    return int.TryParse(value, out int id) ? id : null;
+}
+
+static bool IsValidEmail(string value) =>
+    value.Length <= 254
+    && MailAddress.TryCreate(value, out MailAddress? parsed)
+    && parsed.Address == value;
+
+static bool IsValidHttpUrl(string value) =>
+    Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
+    && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
+// ---------- Open doors (no ticket needed) ----------
+
+app.MapPost("/auth/register", async (AuthRequest request, TaskHubDbContext db, IPasswordHasher<User> hasher) =>
+{
+    string email = (request.Email ?? "").Trim().ToLowerInvariant();
+    string password = request.Password ?? "";
+
+    if (!IsValidEmail(email))
+        return Results.BadRequest("Enter a valid email address.");
+
+    if (password.Length < 8 || password.Length > 100)
+        return Results.BadRequest("Password must be between 8 and 100 characters.");
+
+    if (await db.Users.AnyAsync(u => u.Email == email))
+        return Results.Conflict("That email is already registered.");
+
+    var newUser = new User { Email = email };
+    newUser.PasswordHash = hasher.HashPassword(newUser, password);   // store the scramble only
+
+    db.Users.Add(newUser);
+
+    try
+    {
+        await db.SaveChangesAsync();
+    }
+    catch (DbUpdateException)
+    {
+        // Two sign-ups with the same email at the same instant: the unique index stopped one
+        return Results.Conflict("That email is already registered.");
+    }
+
+    return Results.Created($"/users/{newUser.Id}", new { id = newUser.Id, email = newUser.Email });
+});
+
+app.MapPost("/auth/login", async (AuthRequest request, TaskHubDbContext db, IPasswordHasher<User> hasher) =>
+{
+    string email = (request.Email ?? "").Trim().ToLowerInvariant();
+    User? found = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+    // Same message for "no such user" and "wrong password", so an attacker
+    // can't use this door to find out which emails are registered
+    if (found is null
+        || hasher.VerifyHashedPassword(found, found.PasswordHash, request.Password ?? "")
+            == PasswordVerificationResult.Failed)
+    {
+        return Results.Json(new { error = "Invalid email or password." }, statusCode: 401);
+    }
+
+    return Results.Ok(new { token = CreateToken(found), expiresInMinutes = 60 });
+});
+
+// ---------- Doors that need a ticket ----------
+
+var secured = app.MapGroup("").RequireAuthorization();
 
 // Create a task.
 //  - With a "cron" schedule: the scheduler runs it whenever it is due.
 //  - Without one: it runs once, right away.
-app.MapPost("/tasks", async (CreateTaskRequest request, TaskHubDbContext db, IJobQueue queue) =>
+secured.MapPost("/tasks", async (
+    CreateTaskRequest request, ClaimsPrincipal principal, TaskHubDbContext db, IJobQueue queue) =>
 {
+    if (GetUserId(principal) is not int userId)
+        return Results.Unauthorized();
+
     if (string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.Target))
         return Results.BadRequest("Name and target are required.");
+
+    string target = request.Target.Trim();
+
+    // Reject bad targets now, instead of retrying a job that can never work
+    if (request.Type == TaskType.SendEmail && !IsValidEmail(target))
+        return Results.BadRequest("For SendEmail, the target must be a valid email address.");
+
+    if (request.Type == TaskType.CheckUrl && !IsValidHttpUrl(target))
+        return Results.BadRequest("For CheckUrl, the target must be a valid http or https URL.");
 
     bool isScheduled = !string.IsNullOrWhiteSpace(request.Cron);
     DateTime nextRun = default;
@@ -32,9 +181,10 @@ app.MapPost("/tasks", async (CreateTaskRequest request, TaskHubDbContext db, IJo
 
     var task = new TaskItem
     {
+        UserId = userId,
         Name = request.Name.Trim(),
         Type = request.Type,
-        Target = request.Target.Trim()
+        Target = target
     };
 
     if (isScheduled)
@@ -60,11 +210,17 @@ app.MapPost("/tasks", async (CreateTaskRequest request, TaskHubDbContext db, IJo
     return Results.Created($"/tasks/{task.Id}", new { taskId = task.Id, runId = run.Id });
 });
 
-// Run an existing task again, right now
-app.MapPost("/tasks/{id:int}/run", async (int id, TaskHubDbContext db, IJobQueue queue) =>
+// Run one of MY tasks again, right now
+secured.MapPost("/tasks/{id:int}/run", async (
+    int id, ClaimsPrincipal principal, TaskHubDbContext db, IJobQueue queue) =>
 {
-    bool exists = await db.Tasks.AnyAsync(t => t.Id == id);
-    if (!exists)
+    if (GetUserId(principal) is not int userId)
+        return Results.Unauthorized();
+
+    // The ownership check: "this task id AND it belongs to me".
+    // Someone else's task answers "not found", so its existence isn't revealed.
+    bool mine = await db.Tasks.AnyAsync(t => t.Id == id && t.UserId == userId);
+    if (!mine)
         return Results.NotFound();
 
     var run = new JobRun { TaskItemId = id };
@@ -76,10 +232,13 @@ app.MapPost("/tasks/{id:int}/run", async (int id, TaskHubDbContext db, IJobQueue
     return Results.Accepted($"/runs/{run.Id}", new { runId = run.Id });
 });
 
-// Pause a scheduled task (the scheduler skips paused tasks)
-app.MapPost("/tasks/{id:int}/pause", async (int id, TaskHubDbContext db) =>
+// Pause one of MY scheduled tasks
+secured.MapPost("/tasks/{id:int}/pause", async (int id, ClaimsPrincipal principal, TaskHubDbContext db) =>
 {
-    TaskItem? task = await db.Tasks.FindAsync(id);
+    if (GetUserId(principal) is not int userId)
+        return Results.Unauthorized();
+
+    TaskItem? task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id && t.UserId == userId);
     if (task is null)
         return Results.NotFound();
 
@@ -89,10 +248,13 @@ app.MapPost("/tasks/{id:int}/pause", async (int id, TaskHubDbContext db) =>
     return Results.Ok(new { taskId = id, isActive = false });
 });
 
-// Resume a paused task. Its next run is counted from now.
-app.MapPost("/tasks/{id:int}/resume", async (int id, TaskHubDbContext db) =>
+// Resume one of MY paused tasks. Its next run is counted from now.
+secured.MapPost("/tasks/{id:int}/resume", async (int id, ClaimsPrincipal principal, TaskHubDbContext db) =>
 {
-    TaskItem? task = await db.Tasks.FindAsync(id);
+    if (GetUserId(principal) is not int userId)
+        return Results.Unauthorized();
+
+    TaskItem? task = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id && t.UserId == userId);
     if (task is null)
         return Results.NotFound();
 
@@ -109,9 +271,14 @@ app.MapPost("/tasks/{id:int}/resume", async (int id, TaskHubDbContext db) =>
     return Results.Ok(new { taskId = id, isActive = true, nextRunAtUtc = next });
 });
 
-// List all tasks, newest first
-app.MapGet("/tasks", async (TaskHubDbContext db) =>
-    await db.Tasks
+// List MY tasks, newest first
+secured.MapGet("/tasks", async (ClaimsPrincipal principal, TaskHubDbContext db) =>
+{
+    if (GetUserId(principal) is not int userId)
+        return Results.Unauthorized();
+
+    var tasks = await db.Tasks
+        .Where(t => t.UserId == userId)
         .OrderByDescending(t => t.Id)
         .Select(t => new
         {
@@ -125,11 +292,19 @@ app.MapGet("/tasks", async (TaskHubDbContext db) =>
             t.CreatedAtUtc,
             RunCount = t.Runs.Count
         })
-        .ToListAsync());
+        .ToListAsync();
 
-// List the 50 most recent runs
-app.MapGet("/runs", async (TaskHubDbContext db) =>
-    await db.Runs
+    return Results.Ok(tasks);
+});
+
+// List the 50 most recent runs of MY tasks
+secured.MapGet("/runs", async (ClaimsPrincipal principal, TaskHubDbContext db) =>
+{
+    if (GetUserId(principal) is not int userId)
+        return Results.Unauthorized();
+
+    var runs = await db.Runs
+        .Where(r => r.TaskItem!.UserId == userId)
         .OrderByDescending(r => r.Id)
         .Take(50)
         .Select(r => new
@@ -143,9 +318,15 @@ app.MapGet("/runs", async (TaskHubDbContext db) =>
             r.CreatedAtUtc,
             r.FinishedAtUtc
         })
-        .ToListAsync());
+        .ToListAsync();
+
+    return Results.Ok(runs);
+});
 
 app.Run();
+
+// The shape of the JSON a client sends to sign up or log in
+public record AuthRequest(string? Email, string? Password);
 
 // The shape of the JSON a client sends to create a task ("cron" is optional)
 public record CreateTaskRequest(string Name, TaskType Type, string Target, string? Cron = null);

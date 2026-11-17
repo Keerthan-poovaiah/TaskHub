@@ -6,14 +6,14 @@ using TaskHub.Core;
 namespace TaskHub.Worker;
 
 // Sends a real email through the Resend API
-public class EmailJobHandler
+public class EmailHandler
 {
     private readonly HttpClient _http;
     private readonly string _apiKey;
     private readonly string _from;
-    private readonly ILogger<EmailJobHandler> _logger;
+    private readonly ILogger<EmailHandler> _logger;
 
-    public EmailJobHandler(HttpClient http, IConfiguration config, ILogger<EmailJobHandler> logger)
+    public EmailHandler(HttpClient http, IConfiguration config, ILogger<EmailHandler> logger)
     {
         _http = http;
         _logger = logger;

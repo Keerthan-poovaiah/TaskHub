@@ -2,18 +2,18 @@ using TaskHub.Core;
 
 namespace TaskHub.Worker;
 
-public class JobWorker : BackgroundService
+public class WorkerService : BackgroundService
 {
     private readonly IJobQueue _queue;
     private readonly IJobHandler _handler;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly ILogger<JobWorker> _logger;
+    private readonly ILogger<WorkerService> _logger;
 
-    public JobWorker(
+    public WorkerService(
         IJobQueue queue,
         IJobHandler handler,
         IServiceScopeFactory scopeFactory,
-        ILogger<JobWorker> logger)
+        ILogger<WorkerService> logger)
     {
         _queue = queue;
         _handler = handler;
@@ -63,7 +63,7 @@ public class JobWorker : BackgroundService
 
                 // Idempotency: only do the real work the first time
                 if (await _queue.TryMarkHandledAsync(job))
-                    await _handler.HandleAsync(task, runId, stoppingToken);   // CHANGED: passes runId
+                    await _handler.HandleAsync(task, runId, stoppingToken);
                 else
                     _logger.LogInformation("Duplicate ignored: run {RunId} was already handled", runId);
 

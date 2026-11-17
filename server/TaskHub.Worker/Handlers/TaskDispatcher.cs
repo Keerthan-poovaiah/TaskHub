@@ -5,10 +5,10 @@ namespace TaskHub.Worker;
 // Looks at the task's type and hands it to the right handler
 public class TaskDispatcher : IJobHandler
 {
-    private readonly EmailJobHandler _email;
+    private readonly EmailHandler _email;
     private readonly UrlCheckHandler _urlCheck;
 
-    public TaskDispatcher(EmailJobHandler email, UrlCheckHandler urlCheck)
+    public TaskDispatcher(EmailHandler email, UrlCheckHandler urlCheck)
     {
         _email = email;
         _urlCheck = urlCheck;

@@ -20,11 +20,11 @@ builder.Services.AddTaskHubDatabase(postgresConnection);
 builder.Services.AddSingleton(new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
 
 // The two real handlers, and the dispatcher that chooses between them
-builder.Services.AddSingleton<EmailJobHandler>();
+builder.Services.AddSingleton<EmailHandler>();
 builder.Services.AddSingleton<UrlCheckHandler>();
 builder.Services.AddSingleton<IJobHandler, TaskDispatcher>();
 
 // Register the background loop
-builder.Services.AddHostedService<JobWorker>();
+builder.Services.AddHostedService<WorkerService>();
 
 builder.Build().Run();

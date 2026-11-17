@@ -63,7 +63,7 @@ public class JobWorker : BackgroundService
 
                 // Idempotency: only do the real work the first time
                 if (await _queue.TryMarkHandledAsync(job))
-                    await _handler.HandleAsync(task, stoppingToken);
+                    await _handler.HandleAsync(task, runId, stoppingToken);   // CHANGED: passes runId
                 else
                     _logger.LogInformation("Duplicate ignored: run {RunId} was already handled", runId);
 

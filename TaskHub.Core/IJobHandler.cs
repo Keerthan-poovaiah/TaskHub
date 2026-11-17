@@ -2,5 +2,5 @@
 
 public interface IJobHandler
 {
-    Task HandleAsync(TaskItem task, CancellationToken cancellationToken);
+    Task HandleAsync(TaskItem task, int runId, CancellationToken cancellationToken);
 }

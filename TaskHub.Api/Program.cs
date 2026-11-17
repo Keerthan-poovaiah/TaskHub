@@ -13,22 +13,30 @@ using TaskHub.Infrastructure;
 const string TokenIssuer = "taskhub-api";
 const string TokenAudience = "taskhub-clients";
 
+// Load the .env file BEFORE anything reads settings
+DotEnvLoader.Load();
+
 var builder = WebApplication.CreateBuilder(args);
 
+// Settings come from .env (or the real environment). Nothing secret is typed in the code.
+string redisConnection = builder.Configuration["REDIS_CONNECTION"] ?? "localhost:6379";
+string postgresConnection = builder.Configuration["POSTGRES_CONNECTION"]
+    ?? throw new InvalidOperationException(
+        "POSTGRES_CONNECTION is not set. Copy .env.example to .env and fill it in.");
+
 // Hand out the tools: the Redis queue and the database
-builder.Services.AddTaskHubRedis("localhost:6379");
-builder.Services.AddTaskHubDatabase(
-    "Host=localhost;Port=5433;Database=taskhub;Username=taskhub;Password=taskhub_dev");
+builder.Services.AddTaskHubRedis(redisConnection);
+builder.Services.AddTaskHubDatabase(postgresConnection);
 
 // Show enums as text in JSON ("SendEmail") instead of numbers
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
-// The stamping tool. It comes from an environment variable, never from the code.
+// The stamping tool. It comes from .env, never from the code.
 string jwtSecret = builder.Configuration["JWT_SECRET"] ?? "";
 if (jwtSecret.Length < 32)
     throw new InvalidOperationException(
-        "JWT_SECRET is missing or too short. Set it to a random string of at least 32 characters.");
+        "JWT_SECRET is missing or too short. Put a random string of at least 32 characters in your .env file.");
 
 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
 

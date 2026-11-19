@@ -1,6 +1,6 @@
 using TaskHub.Core;
 
-namespace TaskHub.Worker;
+namespace TaskHub.Background;
 
 public class WorkerService : BackgroundService
 {
@@ -27,72 +27,89 @@ public class WorkerService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            string? job = await _queue.DequeueAsync();
-
-            if (job is null)
-            {
-                await Task.Delay(500, stoppingToken);
-                continue;
-            }
-
-            // The job text must be a run ID like "7". Anything else is junk: drop it.
-            if (!int.TryParse(job, out int runId))
-            {
-                _logger.LogWarning("Skipping '{Job}': not a run ID", job);
-                await _queue.AcknowledgeAsync(job);
-                continue;
-            }
-
-            // A fresh "ledger" for this one job, thrown away at the end of the loop turn
-            using IServiceScope scope = _scopeFactory.CreateScope();
-            IRunStore store = scope.ServiceProvider.GetRequiredService<IRunStore>();
-
             try
             {
-                // Ledger: look up the task and write "Running"
-                TaskItem? task = await store.StartRunAsync(runId);
+                bool didWork = await ProcessNextJobAsync(stoppingToken);
 
-                if (task is null)
-                {
-                    _logger.LogWarning("Run {RunId} not found in the database. Dropping it.", runId);
-                    await _queue.AcknowledgeAsync(job);
-                    continue;
-                }
-
-                _logger.LogInformation("Processing run {RunId}: '{Name}'", runId, task.Name);
-
-                // Idempotency: only do the real work the first time
-                if (await _queue.TryMarkHandledAsync(job))
-                    await _handler.HandleAsync(task, runId, stoppingToken);
-                else
-                    _logger.LogInformation("Duplicate ignored: run {RunId} was already handled", runId);
-
-                // Ledger: write "Succeeded", then remove the slip from the queue
-                await store.MarkSucceededAsync(runId);
-                await _queue.AcknowledgeAsync(job);
-                _logger.LogInformation("Finished run {RunId}", runId);
+                if (!didWork)
+                    await Task.Delay(500, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                // Shutting down: leave the job in "processing". The Reaper will rescue it.
-                break;
+                break;   // shutting down
             }
             catch (Exception ex)
             {
-                // Let a retry run the work again, then decide: retry later or give up
-                await _queue.ClearHandledAsync(job);
-                FailResult result = await _queue.FailAsync(job);
-
-                // Ledger: write "Failed" (will retry) or "Dead" (gave up)
-                await store.MarkFailedAsync(runId, ex.Message, result.IsDead);
-
-                if (result.IsDead)
-                    _logger.LogWarning("DEAD: run {RunId} failed {Attempts} times ({Reason})",
-                        runId, result.Attempts, ex.Message);
-                else
-                    _logger.LogWarning("Failed: run {RunId} (attempt {Attempts}). Retry in {Delay}s",
-                        runId, result.Attempts, result.DelaySeconds);
+                // Redis or the database is unreachable. Wait and try again instead of
+                // crashing, because inside the API a crash here would take the website down.
+                _logger.LogError(ex, "Worker hit a problem. Pausing for 3 seconds.");
+                await Task.Delay(3000, stoppingToken);
             }
         }
+    }
+
+    // Takes one job and handles it. Returns false if there was nothing to do.
+    private async Task<bool> ProcessNextJobAsync(CancellationToken stoppingToken)
+    {
+        string? job = await _queue.DequeueAsync();
+
+        if (job is null)
+            return false;
+
+        // The job text must be a run ID like "7". Anything else is junk: drop it.
+        if (!int.TryParse(job, out int runId))
+        {
+            _logger.LogWarning("Skipping '{Job}': not a run ID", job);
+            await _queue.AcknowledgeAsync(job);
+            return true;
+        }
+
+        // A fresh "ledger" for this one job, thrown away at the end
+        using IServiceScope scope = _scopeFactory.CreateScope();
+        IRunStore store = scope.ServiceProvider.GetRequiredService<IRunStore>();
+
+        try
+        {
+            // Ledger: look up the task and write "Running"
+            TaskItem? task = await store.StartRunAsync(runId);
+
+            if (task is null)
+            {
+                _logger.LogWarning("Run {RunId} not found in the database. Dropping it.", runId);
+                await _queue.AcknowledgeAsync(job);
+                return true;
+            }
+
+            _logger.LogInformation("Processing run {RunId}: '{Name}'", runId, task.Name);
+
+            // Idempotency: only do the real work the first time
+            if (await _queue.TryMarkHandledAsync(job))
+                await _handler.HandleAsync(task, runId, stoppingToken);
+            else
+                _logger.LogInformation("Duplicate ignored: run {RunId} was already handled", runId);
+
+            // Ledger: write "Succeeded", then remove the slip from the queue
+            await store.MarkSucceededAsync(runId);
+            await _queue.AcknowledgeAsync(job);
+            _logger.LogInformation("Finished run {RunId}", runId);
+        }
+        catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            // Let a retry run the work again, then decide: retry later or give up
+            await _queue.ClearHandledAsync(job);
+            FailResult result = await _queue.FailAsync(job);
+
+            // Ledger: write "Failed" (will retry) or "Dead" (gave up)
+            await store.MarkFailedAsync(runId, ex.Message, result.IsDead);
+
+            if (result.IsDead)
+                _logger.LogWarning("DEAD: run {RunId} failed {Attempts} times ({Reason})",
+                    runId, result.Attempts, ex.Message);
+            else
+                _logger.LogWarning("Failed: run {RunId} (attempt {Attempts}). Retry in {Delay}s",
+                    runId, result.Attempts, result.DelaySeconds);
+        }
+
+        return true;
     }
 }

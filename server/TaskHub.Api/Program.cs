@@ -1,8 +1,10 @@
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using TaskHub.Api.Auth;
 using TaskHub.Api.Endpoints;
+using TaskHub.Background;
 using TaskHub.Core;
 using TaskHub.Infrastructure;
 
@@ -11,6 +13,11 @@ DotEnvLoader.Load();
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Hosting platforms (like Render) tell the app which port to listen on
+string? hostPort = builder.Configuration["PORT"];
+if (!string.IsNullOrWhiteSpace(hostPort))
+    builder.WebHost.UseUrls($"http://0.0.0.0:{hostPort}");
+
 // ---------- Settings (from .env or the real environment) ----------
 
 string redisConnection = builder.Configuration["REDIS_CONNECTION"] ?? "localhost:6379";
@@ -18,8 +25,9 @@ string postgresConnection = builder.Configuration["POSTGRES_CONNECTION"]
     ?? throw new InvalidOperationException(
         "POSTGRES_CONNECTION is not set. Copy .env.example to .env and fill it in.");
 
-// The one website address we trust to call this API from a browser
-string uiOrigin = builder.Configuration["UI_ORIGIN"] ?? "http://localhost:5173";
+// The website addresses we trust to call this API from a browser (separate several with commas)
+string[] uiOrigins = (builder.Configuration["UI_ORIGIN"] ?? "http://localhost:5173")
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
 // Throws a clear error right here if the secret is missing or too short
 var tokenService = new TokenService(builder.Configuration["JWT_SECRET"] ?? "");
@@ -31,10 +39,15 @@ builder.Services.AddTaskHubDatabase(postgresConnection);
 builder.Services.AddSingleton(tokenService);
 builder.Services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
 
-// CORS allow-list. Only pages from uiOrigin may read our answers.
+// Free hosting allows only one program, so the background loops can run inside the API.
+// Locally you leave this off and run the loops as separate programs.
+if (builder.Configuration["RUN_BACKGROUND_SERVICES"] == "true")
+    builder.Services.AddTaskHubAllBackground();
+
+// CORS allow-list. Only pages from these origins may read our answers.
 builder.Services.AddCors(options =>
     options.AddPolicy("ui", policy => policy
-        .WithOrigins(uiOrigin)
+        .WithOrigins(uiOrigins)
         .AllowAnyHeader()
         .AllowAnyMethod()));
 
@@ -56,9 +69,24 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
+// Create or update the database tables at startup, so a brand-new empty database fills itself.
+// Fine for one instance. With several instances you would run migrations as a separate step.
+if (builder.Configuration["AUTO_MIGRATE"] != "false")
+{
+    using IServiceScope scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<TaskHubDbContext>();
+    await db.Database.MigrateAsync();
+}
+
 app.UseCors("ui");   // must come BEFORE authentication
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.MapGet("/", () => Results.Ok(new { name = "TaskHub API", health = "/health" }));
+
+// "Are you alive?" It deliberately does not touch the database, so checking on the app
+// never wakes the sleeping database.
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 app.MapAuthEndpoints();
 app.MapTaskEndpoints();

@@ -1,9 +1,9 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using TaskHub.Core;
 
-namespace TaskHub.Worker;
+namespace TaskHub.Background;
 
 // Sends a real email through the Resend API
 public class EmailHandler

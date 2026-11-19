@@ -52,3 +52,14 @@ export async function request(path, { method = "GET", body, token } = {}) {
   const contentType = response.headers.get("content-type") ?? "";
   return contentType.includes("json") ? response.json() : null;
 }
+
+// Asks the server "are you awake?". Opening the website calls this, which also wakes a
+// sleeping free server while the visitor is still reading the page.
+export async function checkHealth() {
+  try {
+    const response = await fetch(`${API_URL}/health`, { cache: "no-store" });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}

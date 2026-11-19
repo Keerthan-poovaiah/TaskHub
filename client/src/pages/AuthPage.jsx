@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { login, register } from "../api/authApi";
+import { checkHealth } from "../api/httpClient";
 
 export default function AuthPage({ onLoggedIn }) {
   const [mode, setMode] = useState("login"); // "login" or "register"
@@ -7,8 +8,35 @@ export default function AuthPage({ onLoggedIn }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [waking, setWaking] = useState(false);
 
   const isRegister = mode === "register";
+
+  // Wake the server as soon as the page opens. The message only appears if it takes a while.
+  useEffect(() => {
+    let cancelled = false;
+
+    const bannerTimer = setTimeout(() => {
+      if (!cancelled) setWaking(true);
+    }, 2500);
+
+    async function wake() {
+      // Keep asking until the server answers (a sleeping free server needs up to a minute)
+      while (!cancelled) {
+        if (await checkHealth()) break;
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+      clearTimeout(bannerTimer);
+      if (!cancelled) setWaking(false);
+    }
+
+    wake();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(bannerTimer);
+    };
+  }, []);
 
   async function handleSubmit(event) {
     event.preventDefault(); // stop the browser from reloading the page
@@ -41,6 +69,13 @@ export default function AuthPage({ onLoggedIn }) {
         <p className="muted">
           {isRegister ? "Create your account" : "Log in to your dashboard"}
         </p>
+
+        {waking && (
+          <p className="muted">
+            Waking up the server... free hosting sleeps when idle, so this can take up to a
+            minute. You can already type your details.
+          </p>
+        )}
 
         <label>
           Email

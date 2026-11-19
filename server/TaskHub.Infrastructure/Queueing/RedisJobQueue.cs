@@ -131,4 +131,16 @@ public class RedisJobQueue : IJobQueue
 
         return due.Length;
     }
+
+    public async Task<bool> IsTrackedAsync(string job)
+    {
+        // Look on the three shelves a live job can be on: waiting, in someone's hands, or waiting to retry
+        if (await _db.ListPositionAsync(QueueKeys.Jobs, job) >= 0)
+            return true;
+
+        if (await _db.ListPositionAsync(QueueKeys.Processing, job) >= 0)
+            return true;
+
+        return await _db.SortedSetScoreAsync(QueueKeys.Delayed, job) is not null;
+    }
 }

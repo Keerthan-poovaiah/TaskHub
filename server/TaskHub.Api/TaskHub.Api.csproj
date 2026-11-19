@@ -9,6 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="..\TaskHub.Core\TaskHub.Core.csproj" />
     <ProjectReference Include="..\TaskHub.Infrastructure\TaskHub.Infrastructure.csproj" />
+    <ProjectReference Include="..\TaskHub.Background\TaskHub.Background.csproj" />
   </ItemGroup>
 
   <ItemGroup>

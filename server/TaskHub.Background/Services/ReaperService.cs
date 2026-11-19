@@ -1,6 +1,6 @@
 ﻿using TaskHub.Core;
 
-namespace TaskHub.Reaper;
+namespace TaskHub.Background;
 
 public class ReaperService : BackgroundService
 {
@@ -22,17 +22,29 @@ public class ReaperService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            // Situations 1 and 2: stuck jobs
-            int recovered = await _queue.RecoverStuckJobsAsync(timeout);
-            if (recovered > 0)
-                _logger.LogWarning("Recovered {Count} stuck job(s)", recovered);
+            try
+            {
+                // Situations 1 and 2: stuck jobs
+                int recovered = await _queue.RecoverStuckJobsAsync(timeout);
+                if (recovered > 0)
+                    _logger.LogWarning("Recovered {Count} stuck job(s)", recovered);
 
-            // Situation 3: retries whose waiting time is over
-            int released = await _queue.ReleaseDueRetriesAsync();
-            if (released > 0)
-                _logger.LogInformation("Released {Count} job(s) for retry", released);
+                // Situation 3: retries whose waiting time is over
+                int released = await _queue.ReleaseDueRetriesAsync();
+                if (released > 0)
+                    _logger.LogInformation("Released {Count} job(s) for retry", released);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;   // shutting down
+            }
+            catch (Exception ex)
+            {
+                // Redis is unreachable right now. Log it and try again on the next round.
+                _logger.LogError(ex, "Reaper hit a problem. Will try again.");
+            }
 
-            await Task.Delay(500, stoppingToken);
+            await Task.Delay(1000, stoppingToken);
         }
     }
 }

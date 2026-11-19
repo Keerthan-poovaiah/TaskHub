@@ -1,6 +1,6 @@
-using TaskHub.Core;
+﻿using TaskHub.Core;
 
-namespace TaskHub.Worker;
+namespace TaskHub.Background;
 
 // Looks at the task's type and hands it to the right handler
 public class TaskDispatcher : IJobHandler

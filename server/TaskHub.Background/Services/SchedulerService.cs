@@ -2,7 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using TaskHub.Core;
 using TaskHub.Infrastructure;
 
-namespace TaskHub.Scheduler;
+namespace TaskHub.Background;
 
 public class SchedulerService : BackgroundService
 {
@@ -40,7 +40,7 @@ public class SchedulerService : BackgroundService
                 _logger.LogError(ex, "Scheduler check failed. Will retry.");
             }
 
-            await Task.Delay(1000, stoppingToken);   // look at the clock once a second
+            await Task.Delay(5000, stoppingToken);   // look at the clock every 5 seconds
         }
     }
 
@@ -97,7 +97,8 @@ public class SchedulerService : BackgroundService
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
 
-            // Put the run's ID on the hook for the workers
+            // Put the run's ID on the hook for the workers. If this step fails, the run stays
+            // "Queued" in the database and the Sweeper puts it back on the hook later.
             await _queue.EnqueueAsync(run.Id.ToString());
 
             _logger.LogInformation("Scheduled run {RunId} for task {TaskId} '{Name}'. Next: {Next:u}",

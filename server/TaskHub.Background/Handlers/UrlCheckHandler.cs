@@ -1,7 +1,7 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using TaskHub.Core;
 
-namespace TaskHub.Worker;
+namespace TaskHub.Background;
 
 // Visits a website and fails if it does not answer properly
 public class UrlCheckHandler

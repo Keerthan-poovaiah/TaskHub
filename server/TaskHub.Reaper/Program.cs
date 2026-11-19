@@ -1,5 +1,5 @@
+using TaskHub.Background;
 using TaskHub.Infrastructure;
-using TaskHub.Reaper;
 
 // Load the .env file BEFORE anything reads settings
 DotEnvLoader.Load();
@@ -10,6 +10,6 @@ var builder = Host.CreateApplicationBuilder(args);
 string redisConnection = builder.Configuration["REDIS_CONNECTION"] ?? "localhost:6379";
 
 builder.Services.AddTaskHubRedis(redisConnection);
-builder.Services.AddHostedService<ReaperService>();
+builder.Services.AddTaskHubReaper();
 
 builder.Build().Run();

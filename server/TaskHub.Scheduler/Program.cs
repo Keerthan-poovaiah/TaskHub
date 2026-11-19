@@ -1,5 +1,5 @@
+using TaskHub.Background;
 using TaskHub.Infrastructure;
-using TaskHub.Scheduler;
 
 // Load the .env file BEFORE anything reads settings
 DotEnvLoader.Load();
@@ -11,10 +11,8 @@ string postgresConnection = builder.Configuration["POSTGRES_CONNECTION"]
     ?? throw new InvalidOperationException(
         "POSTGRES_CONNECTION is not set. Copy .env.example to .env and fill it in.");
 
-// Hand out the tools: the queue (Redis) and the ledger (database)
 builder.Services.AddTaskHubRedis(redisConnection);
 builder.Services.AddTaskHubDatabase(postgresConnection);
-
-builder.Services.AddHostedService<SchedulerService>();
+builder.Services.AddTaskHubScheduler();
 
 builder.Build().Run();

@@ -21,6 +21,9 @@ public interface IJobQueue
     // Reaper side
     Task<int> RecoverStuckJobsAsync(TimeSpan timeout);
     Task<int> ReleaseDueRetriesAsync();
+
+    // Sweeper side: is this job anywhere in the queue system right now?
+    Task<bool> IsTrackedAsync(string job);
 }
 
 // What happened when a job failed (used for logging)
